@@ -15,12 +15,15 @@ VERTICAL_FIRST = (3, 2)
 display_coordinates_split = re.compile('[x+]')
 
 
-def get_display_positions():
+def get_displays(horizontal_first_sorting=False):
+    sorting = HORIZONTAL_FIRST if horizontal_first_sorting else VERTICAL_FIRST
+    displays = []
     for x in execute('xrandr'):
         split = x.split(' ')
         if 'connected' in split:
             position = [display_coordinates_split.split(t) for t in split if t != 'primary'][2]
-            yield [int(x) for x in position]
+            displays.append([int(x) for x in position])
+    return sorted(displays, key=lambda x: [x[i] for i in sorting])
 
 
 def get_active_window_id():
@@ -101,25 +104,15 @@ def new_window_position(window_id, displays, step=1):
     return xrel * nwidth + nwoffset, yrel * nheight + nhoffset
 
 
-def move_to_next_monitor(window_id, displays, step=1):
+def move_to_next_monitor(window_id, displays, reverse=False):
     state = get_window_state(window_id)
     unmaximize(window_id)
-    xnew, ynew = new_window_position(window_id, displays, step)
+    xnew, ynew = new_window_position(window_id, displays, step=-1 if reverse else 1)
     execute('xdotool windowmove %s %s %s' % (window_id, xnew, ynew))
     set_window_state(window_id, state)
 
 
 if __name__ == '__main__':
-    if '--horizontal-first' in sys.argv:
-        sorting = HORIZONTAL_FIRST
-    else:
-        sorting = VERTICAL_FIRST
-
-    displays = sorted(get_display_positions(), key=lambda x: [x[i] for i in sorting])
-
+    displays = get_displays('--horizontal-first' in sys.argv)
     if len(displays) > 1:
-        if '--reverse' in sys.argv:
-            step = -1
-        else:
-            step = 1
-        move_to_next_monitor(get_active_window_id(), displays, step)
+        move_to_next_monitor(get_active_window_id(), displays, '--reverse' in sys.argv)
