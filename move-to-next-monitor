@@ -1,75 +1,125 @@
-#!/bin/sh
-#
-# Move the current window to the next monitor.
-#
-# Also works only on one X screen (which is the most common case).
-#
-# Props to
-# http://icyrock.com/blog/2012/05/xubuntu-moving-windows-between-monitors/
-#
-# Unfortunately, both "xdotool getwindowgeometry --shell $window_id" and
-# checking "-geometry" of "xwininfo -id $window_id" are not sufficient, as
-# the first command does not respect panel/decoration offsets and the second
-# will sometimes give a "-0-0" geometry. This is why we resort to "xwininfo".
+#!/bin/env python
 
-screen_width=$(xdpyinfo | awk '/dimensions:/ { print $2; exit }' | cut -d"x" -f1)
-screen_height=$(xdpyinfo | awk '/dimensions:/ { print $2; exit }' | cut -d"x" -f2)
-display_width=$(xdotool getdisplaygeometry | cut -d" " -f1)
-display_height=$(xdotool getdisplaygeometry | cut -d" " -f2)
-window_id=$(xdotool getactivewindow)
+import subprocess
+import re
 
-# Remember if it was maximized.
-window_horz_maxed=$(xprop -id "$window_id" _NET_WM_STATE | grep '_NET_WM_STATE_MAXIMIZED_HORZ')
-window_vert_maxed=$(xprop -id "$window_id" _NET_WM_STATE | grep '_NET_WM_STATE_MAXIMIZED_VERT')
+import sys
 
-# Un-maximize current window so that we can move it
-wmctrl -ir "$window_id" -b remove,maximized_vert,maximized_horz
 
-# Read window position
-x=$(xwininfo -id "$window_id" | awk '/Absolute upper-left X:/ { print $4 }')
-y=$(xwininfo -id "$window_id" | awk '/Absolute upper-left Y:/ { print $4 }')
+def execute(command):
+    return subprocess.run(command.split(), stdout=subprocess.PIPE).stdout.decode('utf8').strip().split('\n')
 
-# Subtract any offsets caused by panels or window decorations
-x_offset=$(xwininfo -id "$window_id" | awk '/Relative upper-left X:/ { print $4 }')
-y_offset=$(xwininfo -id "$window_id" | awk '/Relative upper-left Y:/ { print $4 }')
-x=$(( x - x_offset))
-y=$(( y - y_offset))
 
-# Compute new X position
-new_x=$((x + display_width))
-# Compute new Y position
-new_y=$((y + display_height))
+HORIZONTAL_FIRST = (2, 3)
+VERTICAL_FIRST = (3, 2)
+display_coordinates_split = re.compile('[x+]')
 
-# If we would move off the right-most monitor, we set it to the left one.
-# We also respect the window's width here: moving a window off more than half its width won't happen.
-width=$(xdotool getwindowgeometry "$window_id" | awk '/Geometry:/ { print $2 }'|cut -d"x" -f1)
-if [ "$(( new_x + width / 2))" -gt "$screen_width" ]; then
-    new_x=$((new_x - screen_width))
-fi
 
-height=$(xdotool getwindowgeometry "$window_id" | awk '/Geometry:/ { print $2 }'|cut -d"x" -f2)
-if [ "$((new_y + height / 2))" -gt "$screen_height" ]; then
-    new_y=$((new_y - screen_height))
-fi
+def get_display_positions():
+    for x in execute('xrandr'):
+        split = x.split(' ')
+        if 'connected' in split:
+            position = [display_coordinates_split.split(t) for t in split if t != 'primary'][2]
+            yield [int(x) for x in position]
 
-# Don't move off the left side.
-if [ "$new_x" -lt 0 ]; then
-    new_x=0
-fi
 
-# Don't move off the bottom
-if [ "$new_y" -lt 0 ]; then
-    new_y=0
-fi
+def get_active_window_id():
+    return int(execute('xdotool getactivewindow')[0])
 
-# Move the window
-xdotool windowmove "$window_id" "$new_x" "$new_y"
 
-# Maximize window again, if it was before
-if [ -n "${window_horz_maxed}" ] && [ -n "${window_vert_maxed}" ]; then
-    wmctrl -ir "$window_id" -b add,maximized_vert,maximized_horz
-elif [ -n  "${window_horz_maxed}" ]; then
-    wmctrl -ir "$window_id" -b add,maximized_horz
-elif [ -n  "${window_vert_maxed}" ]; then
-    wmctrl -ir "$window_id" -b add,maximized_vert
-fi
+def get_window_state(window_id):
+    window_state = execute('xprop -id %s _NET_WM_STATE' % window_id)[0]
+    return dict(hmaximized='_NET_WM_STATE_MAXIMIZED_HORZ' in window_state,
+                vmaximized='_NET_WM_STATE_MAXIMIZED_VERT' in window_state,
+                focused='_NET_WM_STATE_FOCUSED' in window_state)
+
+
+def set_window_state(window_id, state):
+    if state['hmaximized'] or state['vmaximized']:
+        props = ['add']
+        if state['hmaximized']:
+            props.append('maximized_horz')
+        if state['vmaximized']:
+            props.append('maximized_vert')
+        execute('wmctrl -ir %s -b %s' % (window_id, ','.join(props)))
+
+
+def unmaximize(window_id):
+    execute('wmctrl -ir %s -b remove,maximized_vert,maximized_horz' % window_id)
+
+
+def get_window_position(window_id):
+    abs_x, abs_y, rel_x, rel_y, width, height = [0] * 6
+    for row in execute('xwininfo -id %s' % window_id):
+        if 'Absolute upper-left X:' in row:
+            abs_x = int(row.split()[-1])
+        elif 'Absolute upper-left Y:' in row:
+            abs_y = int(row.split()[-1])
+        elif 'Relative upper-left X:' in row:
+            rel_x = int(row.split()[-1])
+        elif 'Relative upper-left Y:' in row:
+            rel_y = int(row.split()[-1])
+        elif 'Width:' in row:
+            width = int(row.split()[-1])
+        elif 'Height:' in row:
+            height = int(row.split()[-1])
+    return abs_x - rel_x, abs_y - rel_y, width + rel_x, height + rel_y
+
+
+def point_seq(window_id):
+    x, y, x_size, y_size = get_window_position(window_id)
+    for y in range(y, y_size + 1, int(y_size / 2)):
+        yield x + int(x_size / 2), y
+        yield x, y
+        yield x + x_size, y
+
+
+def get_display_index(point, displays):
+    x, y = point
+    for i, display in enumerate(displays):
+        width, height, woffset, hoffset = display
+        if woffset <= x < woffset + width and hoffset <= y < hoffset + height:
+            return i
+
+
+def get_display_index_of_window(window_id, displays):
+    for point in point_seq(window_id):
+        return get_display_index(point, displays)
+
+
+def next_display_index(index, displays, step=1):
+    return (index + step) % len(displays)
+
+
+def new_window_position(window_id, displays, step=1):
+    window_pos = wx, wy = get_window_position(window_id)
+    display_index = get_display_index(window_pos, displays)
+    owidth, oheight, owoffset, ohoffset = displays[display_index]
+    xrel = (wx - owoffset) / owidth
+    yrel = (wy - ohoffset) / oheight
+    nwidth, nheight, nwoffset, nhoffset = displays[next_display_index(display_index, displays, step)]
+    return xrel * nwidth + nwoffset, yrel * nheight + nhoffset
+
+
+def move_to_next_monitor(window_id, displays, step=1):
+    state = get_window_state(window_id)
+    unmaximize(window_id)
+    xnew, ynew = new_window_position(window_id, displays, step)
+    execute('xdotool windowmove %s %s %s' % (window_id, xnew, ynew))
+    set_window_state(window_id, state)
+
+
+if __name__ == '__main__':
+    if '--horizontal-first' in sys.argv:
+        sorting = HORIZONTAL_FIRST
+    else:
+        sorting = VERTICAL_FIRST
+
+    displays = sorted(get_display_positions(), key=lambda x: [x[i] for i in sorting])
+
+    if len(displays) > 1:
+        if '--reverse' in sys.argv:
+            step = -1
+        else:
+            step = 1
+        move_to_next_monitor(get_active_window_id(), displays, step)
