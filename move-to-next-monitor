@@ -5,14 +5,13 @@ import re
 
 import sys
 
-
-def execute(command):
-    return subprocess.run(command.split(), stdout=subprocess.PIPE).stdout.decode('utf8').strip().split('\n')
-
-
 HORIZONTAL_FIRST = (2, 3)
 VERTICAL_FIRST = (3, 2)
 display_coordinates_split = re.compile('[x+]')
+
+
+def execute(command):
+    return subprocess.run(command.split(), stdout=subprocess.PIPE).stdout.decode('utf8').strip().split('\n')
 
 
 def get_displays(horizontal_first_sorting=False):
@@ -21,8 +20,8 @@ def get_displays(horizontal_first_sorting=False):
     for x in execute('xrandr'):
         split = x.split(' ')
         if 'connected' in split:
-            position = [display_coordinates_split.split(t) for t in split if t != 'primary'][2]
-            displays.append([int(x) for x in position])
+            location = [display_coordinates_split.split(t) for t in split if t != 'primary'][2]
+            displays.append([int(x) for x in location])
     return sorted(displays, key=lambda x: [x[i] for i in sorting])
 
 
@@ -51,7 +50,7 @@ def unmaximize(window_id):
     execute('wmctrl -ir %s -b remove,maximized_vert,maximized_horz' % window_id)
 
 
-def get_window_position(window_id):
+def get_window_location(window_id):
     abs_x, abs_y, rel_x, rel_y, width, height = [0] * 6
     for row in execute('xwininfo -id %s' % window_id):
         if 'Absolute upper-left X:' in row:
@@ -70,15 +69,15 @@ def get_window_position(window_id):
 
 
 def point_seq(window_id):
-    x, y, x_size, y_size = get_window_position(window_id)
-    for y in range(y, y_size + 1, int(y_size / 2)):
-        yield x + int(x_size / 2), y
-        yield x, y
-        yield x + x_size, y
+    x_, y_, x_size, y_size = get_window_location(window_id)
+    for y in range(y_, y_ + y_size + 1, int(y_size / 2)):
+        yield x_ + int(x_size / 2), y
+        yield x_, y
+        yield x_ + x_size, y
 
 
 def get_display_index(point, displays):
-    x, y = point
+    x, y = point[:2]
     for i, display in enumerate(displays):
         width, height, woffset, hoffset = display
         if woffset <= x < woffset + width and hoffset <= y < hoffset + height:
@@ -87,16 +86,19 @@ def get_display_index(point, displays):
 
 def get_display_index_of_window(window_id, displays):
     for point in point_seq(window_id):
-        return get_display_index(point, displays)
+        i = get_display_index(point, displays)
+        if i is not None:
+            return i
 
 
 def next_display_index(index, displays, step=1):
     return (index + step) % len(displays)
 
 
-def new_window_position(window_id, displays, step=1):
-    window_pos = wx, wy = get_window_position(window_id)
-    display_index = get_display_index(window_pos, displays)
+def new_window_location(window_id, displays, step=1):
+    window_pos = get_window_location(window_id)
+    wx, wy = window_pos[:2]
+    display_index = get_display_index_of_window(window_id, displays)
     owidth, oheight, owoffset, ohoffset = displays[display_index]
     xrel = (wx - owoffset) / owidth
     yrel = (wy - ohoffset) / oheight
@@ -107,7 +109,7 @@ def new_window_position(window_id, displays, step=1):
 def move_to_next_monitor(window_id, displays, reverse=False):
     state = get_window_state(window_id)
     unmaximize(window_id)
-    xnew, ynew = new_window_position(window_id, displays, step=-1 if reverse else 1)
+    xnew, ynew = new_window_location(window_id, displays, step=-1 if reverse else 1)
     execute('xdotool windowmove %s %s %s' % (window_id, xnew, ynew))
     set_window_state(window_id, state)
 
