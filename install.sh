@@ -7,3 +7,4 @@ if /usr/bin/env python -V 2>&1 | grep 'Python 2' &> /dev/null; then
 else
     cp ./move-to-next-monitor /usr/local/bin/move-to-next-monitor
 fi
+chmod +x /usr/local/bin/move-to-next-monitor
